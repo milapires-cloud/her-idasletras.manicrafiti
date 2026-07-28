@@ -1,0 +1,21 @@
+{
+  "name": "MANICRAFITI - Herói da Leitura",
+  "short_name": "MANICRAFITI",
+  "description": "Jogo de alfabetização fônica com missões, monstros, voz e painel dos pais.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#7cc0ff",
+  "theme_color": "#5aab3a",
+  "categories": ["education", "kids", "games"],
+  "lang": "pt-BR",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
