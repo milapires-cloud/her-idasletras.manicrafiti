@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import McButton from "@/components/McButton";
 import VoiceAnswer from "@/components/VoiceAnswer";
 import PixelConfetti from "@/components/PixelConfetti";
