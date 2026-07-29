@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import McButton from "@/components/McButton";
 import VoiceAnswer from "@/components/VoiceAnswer";
 import PixelConfetti from "@/components/PixelConfetti";
@@ -9,9 +9,16 @@ import { say, sfx } from "@/lib/voice";
 import { matchesTarget } from "@/lib/speech";
 import { pronounce } from "@/lib/pronounce";
 import { api } from "@/lib/session";
+import { buildAdaptiveQueue, type WeakItem } from "@/lib/adaptive";
 
 // BATALHA ÉPICA CONTRA MONSTRO DOS MAUS HÁBITOS.
 // Fogo, tremor, explosões, sons. A criança lê para atacar.
+//
+// GARANTIA DE ESTABILIDADE: a batalha NUNCA prende a criança.
+// - Depois de 2 tentativas erradas, o jogo ENSINA a palavra e segue.
+// - As palavras erradas voltam no FIM para revisão (repetição espaçada).
+// - As vidas nunca dão "game over": ao zerar, o herói RECARREGA com
+//   uma poção e continua — para um miúdo de 6 anos, nunca há derrota.
 export default function MonsterBattle({
   hero,
   plan,
@@ -24,24 +31,48 @@ export default function MonsterBattle({
   const monster = useMemo(() => monsterForDay(plan.day), [plan.day]);
   const armor = useMemo(() => armorForXp(hero.xp), [hero.xp]);
 
-  const items = useMemo(() => {
+  // Palavras/sílabas base da batalha.
+  const baseItems = useMemo(() => {
     const base = plan.syllables.length ? plan.syllables : plan.words;
     const arr = base.slice(0, Math.max(monster.hp, 5));
     while (arr.length < monster.hp) arr.push(base[arr.length % base.length]);
     return arr.slice(0, monster.hp);
   }, [plan, monster.hp]);
 
-  const [i, setI] = useState(0);
-  const [hp, setHp] = useState(monster.hp);
+  // Fila de ataque (pode ser reordenada pelo motor adaptativo e crescer
+  // quando uma palavra errada volta para revisão).
+  const [queue, setQueue] = useState<string[]>(baseItems);
+  const goal = baseItems.length; // nº de acertos para derrotar o monstro
+  const requeued = useRef<Set<string>>(new Set());
+
+  const [pos, setPos] = useState(0);
+  const [defeated, setDefeated] = useState(0); // acertos válidos
+  const [tries, setTries] = useState(0);
+  const [combo, setCombo] = useState(0);
   const [heroHp, setHeroHp] = useState(3);
   const [shake, setShake] = useState(false);
   const [fire, setFire] = useState(false);
   const [hit, setHit] = useState(false);
   const [confetti, setConfetti] = useState(0);
-  const [phase, setPhase] = useState<"intro" | "fight" | "win" | "lose">("intro");
+  const [phase, setPhase] = useState<"intro" | "fight" | "win">("intro");
   const [locked, setLocked] = useState(false);
 
-  const item = items[i];
+  const item = queue[pos];
+
+  // Prioriza o que a criança mais erra — sem sair do conteúdo de hoje.
+  useEffect(() => {
+    let alive = true;
+    api<{ weak: WeakItem[] }>(`/api/attempts?heroId=${hero.id}`)
+      .then((res) => {
+        const weak = res?.data?.weak;
+        if (!alive || !weak?.length) return;
+        setQueue((q) => buildAdaptiveQueue(q, weak));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [hero.id]);
 
   useEffect(() => {
     say(`${monster.name}! ${monster.taunt}`, { mood: "boss" });
@@ -52,12 +83,34 @@ export default function MonsterBattle({
 
   useEffect(() => {
     if (phase !== "fight" || !item) return;
-    say(`Lê para atacar: ${pronounce(item)}`);
+    setTries(0);
     setLocked(false);
-  }, [i, phase, item]);
+    say(`Lê para atacar: ${pronounce(item)}`);
+  }, [pos, phase, item]);
+
+  // Avança para o próximo alvo da fila (ou vence se já cumpriu a meta).
+  const goNext = useCallback(
+    (nextDefeated: number) => {
+      if (nextDefeated >= goal) {
+        sfx.explode();
+        setPhase("win");
+        setConfetti(Date.now());
+        say(`${monster.defeat} Venceste, ${hero.name}!`, { mood: "epic" });
+        setTimeout(onDone, 3600);
+        return;
+      }
+      if (pos + 1 < queue.length) {
+        setPos(pos + 1);
+      } else {
+        // Sem mais itens na fila mas ainda falta meta: recomeça do que resta.
+        setPos(0);
+      }
+    },
+    [goal, monster.defeat, hero.name, onDone, pos, queue.length]
+  );
 
   const answer = async (text: string, alts: string[]) => {
-    if (locked || phase !== "fight") return;
+    if (locked || phase !== "fight" || !item) return;
     setLocked(true);
     const correct = matchesTarget(item, [text, ...alts]);
     api("/api/attempts", {
@@ -69,48 +122,62 @@ export default function MonsterBattle({
         target: item,
         correct,
       },
-    });
+    }).catch(() => {});
 
     if (correct) {
-      // ATAQUE: fogo no monstro
       setFire(true);
       setHit(true);
       sfx.correct();
       setConfetti(Date.now());
-      const nhp = hp - 1;
-      setHp(nhp);
-      say(`${item}! Golpe de fogo!`, { mood: "hype" });
+      const nCombo = combo + 1;
+      setCombo(nCombo);
+      const nDefeated = defeated + 1;
+      setDefeated(nDefeated);
+      // Feedback de combo para manter o miúdo empolgado.
+      if (nCombo >= 3) say(`${item}! Combo x${nCombo}! Estás em chamas!`, { mood: "hype" });
+      else say(`${item}! Golpe de fogo!`, { mood: "hype" });
       setTimeout(() => {
         setFire(false);
         setHit(false);
       }, 700);
-      if (nhp <= 0) {
-        sfx.explode();
-        setPhase("win");
-        say(`${monster.defeat} Venceste, ${hero.name}!`, { mood: "epic" });
-        setConfetti(Date.now());
-        setTimeout(onDone, 3600);
-        return;
-      }
+      setTimeout(() => goNext(nDefeated), 1600);
     } else {
-      // Monstro contra-ataca
       setShake(true);
       sfx.wrong();
-      setHeroHp((h) => Math.max(0, h - 1));
-      say(`O monstro atacou! Era ${pronounce(item)}. Tenta outra vez!`, { mood: "gentle" });
+      setCombo(0);
+      const n = tries + 1;
+      setTries(n);
       setTimeout(() => setShake(false), 500);
-    }
 
-    setTimeout(
-      () => {
-        if (correct) {
-          if (i + 1 < items.length) setI(i + 1);
-        } else {
-          setLocked(false);
+      // Vidas: ao zerar, RECARREGA (nunca game over para uma criança).
+      setHeroHp((h) => {
+        const nh = h - 1;
+        if (nh <= 0) {
+          setTimeout(
+            () => say("Bebe a poção mágica! Corações cheios outra vez. Continua!", { mood: "cheer" }),
+            300
+          );
+          sfx.levelUp();
+          return 3;
         }
-      },
-      correct ? 1600 : 2600
-    );
+        return nh;
+      });
+
+      if (n >= 2) {
+        // ENSINA e segue — a palavra errada volta ao fim para revisão.
+        if (!requeued.current.has(item)) {
+          requeued.current.add(item);
+          setQueue((q) => [...q, item]);
+        }
+        say(`A palavra é ${pronounce(item)}. Diz comigo: ${pronounce(item)}. Vamos à próxima!`, {
+          mood: "gentle",
+        });
+        setTimeout(() => goNext(defeated), 3200);
+      } else {
+        say(`Quase! Era ${pronounce(item)}. Tenta outra vez!`, { mood: "gentle" });
+        setTimeout(() => setLocked(false), 2200);
+      }
+    }
   };
 
   return (
@@ -155,9 +222,16 @@ export default function MonsterBattle({
           ⚔ BOSS · DIA {plan.day}
         </div>
         <div className="mc-block bg-black/70 px-3 py-2 text-[9px] text-white">
-          {i + 1}/{items.length}
+          {Math.min(defeated + 1, goal)}/{goal}
         </div>
       </div>
+
+      {/* Combo */}
+      {combo >= 2 && phase === "fight" && (
+        <div className="absolute top-16 right-4 z-10 mc-block bg-orange-500 px-3 py-1 text-[10px] font-bold text-white animate-pop">
+          🔥 COMBO x{combo}
+        </div>
+      )}
 
       {/* Nome + HP do monstro */}
       <div className="z-10 text-center mb-1">
@@ -168,7 +242,7 @@ export default function MonsterBattle({
       <div className="w-64 mc-hp h-4 mb-4 z-10">
         <div
           style={{
-            width: `${(hp / monster.hp) * 100}%`,
+            width: `${Math.max(0, ((goal - defeated) / goal) * 100)}%`,
             background: "linear-gradient(180deg,#ff5555,#a00)",
           }}
         />

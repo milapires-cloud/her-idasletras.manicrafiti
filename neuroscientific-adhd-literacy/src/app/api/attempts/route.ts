@@ -1,8 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { attempts, dayProgress, heroes } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { computeAccuracy, isMastered } from "@/lib/curriculum";
+import { weakestTargets } from "@/lib/adaptive";
+
+// Retorna os alvos que a criança mais erra (para o jogo REVER primeiro).
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const heroId = Number(searchParams.get("heroId"));
+  if (!heroId) return NextResponse.json({ error: "heroId" }, { status: 400 });
+
+  // Olha as últimas ~200 tentativas — janela recente é o que importa.
+  const rows = await db
+    .select()
+    .from(attempts)
+    .where(eq(attempts.heroId, heroId))
+    .orderBy(desc(attempts.createdAt))
+    .limit(200);
+
+  const weak = weakestTargets(rows, { minAttempts: 2, masteryPct: 75, limit: 8 });
+  return NextResponse.json({ weak });
+}
 
 // Grava uma tentativa granular e — se for a última do dia — consolida.
 export async function POST(req: NextRequest) {
