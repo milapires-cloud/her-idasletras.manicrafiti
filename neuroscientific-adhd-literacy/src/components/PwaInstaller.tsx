@@ -23,11 +23,28 @@ export default function PwaInstaller() {
     setInstalled(isStandalone());
 
     if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("/sw.js").catch(() => {
-          // Se o navegador bloquear, o app continua funcionando normal.
+      const host = window.location.hostname;
+      // No preview do v0 (vusercontent.net) NÃO registamos o SW: ele
+      // conflita com o HMR e faz a página recarregar em loop.
+      const isPreview = /vusercontent\.net$/.test(host);
+
+      if (isPreview) {
+        // Limpa qualquer SW/cache antigo que tenha ficado gravado no aparelho
+        // e estava a causar o "voltar sempre pro início".
+        navigator.serviceWorker
+          .getRegistrations()
+          .then((regs) => regs.forEach((r) => r.unregister()))
+          .catch(() => {});
+        if ("caches" in window) {
+          caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(() => {});
+        }
+      } else {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/sw.js").catch(() => {
+            // Se o navegador bloquear, o app continua funcionando normal.
+          });
         });
-      });
+      }
     }
 
     const onPrompt = (e: Event) => {
